@@ -210,6 +210,11 @@ const buildJoins = (
 		const joinType = join.type ?? 'INNER';
 		const joinTableName = join.schema.toLowerCase();
 		const joinTable = quoteIdent(joinTableName);
+		// When an alias is given, reference the joined table by that alias in both
+		// the ON clause and column selections. The alias also becomes the key under
+		// which columns are nested in the reconstructed result row.
+		const joinRef = join.alias !== undefined ? quoteIdent(join.alias) : joinTable;
+		const resultKey = join.alias ?? join.schema;
 
 		let onClause: string;
 		if (typeof join.on === 'string') {
@@ -221,24 +226,28 @@ const buildJoins = (
 				.map(
 					(m) =>
 						`${quoteIdent(mainTable)}.${quoteIdent(m.localColumn)}` +
-						` = ${joinTable}.${quoteIdent(m.foreignColumn)}`,
+						` = ${joinRef}.${quoteIdent(m.foreignColumn)}`,
 				)
 				.join(' AND ');
 		}
 
-		clauseParts.push(`${joinType} JOIN ${joinTable} ON ${onClause}`);
+		const joinClause =
+			join.alias !== undefined
+				? `${joinType} JOIN ${joinTable} AS ${joinRef} ON ${onClause}`
+				: `${joinType} JOIN ${joinTable} ON ${onClause}`;
+		clauseParts.push(joinClause);
 
 		// Add per-column aliases for this join when schema info is available.
 		if (joinSchemas) {
 			const joinSchema = joinSchemas.get(join.schema);
 			if (joinSchema) {
 				for (const col of Object.keys(joinSchema.properties)) {
-					const alias = `__${join.schema}__${col}`;
-					columnParts.push(`${joinTable}.${quoteIdent(col)} AS ${quoteIdent(alias)}`);
+					const alias = `__${resultKey}__${col}`;
+					columnParts.push(`${joinRef}.${quoteIdent(col)} AS ${quoteIdent(alias)}`);
 				}
 			} else {
 				// Schema not registered — fall back to wildcard for this join.
-				columnParts.push(`${joinTable}.*`);
+				columnParts.push(`${joinRef}.*`);
 			}
 		}
 	}

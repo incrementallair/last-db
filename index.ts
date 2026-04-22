@@ -45,6 +45,12 @@ type JoinColumnMapping = {
 type JoinSpec = {
     /** Schema name (matches Schema.name) of the table to join. */
     schema: string;
+    /**
+     * Optional SQL alias for the joined table. Required when joining the same
+     * schema more than once. Also used as the key in the reconstructed result
+     * object — defaults to the schema name when omitted.
+     */
+    alias?: string;
     /** Defaults to 'INNER'. */
     type?: JoinType;
     /**

@@ -384,6 +384,50 @@ test('Postgres driver read with joins', async () => {
     // Alice's comment since she is the post author — Bob's comment is excluded.
     assert.equal(multiConditionJoin.length, 1);
     assert.equal(multiConditionJoin[0].content, 'Thanks!');
+
+    // 6. Alias — result is nested under the alias key, not the schema name
+    const postsWithAlias = await driver.read(
+      [
+        {
+          schema: 'Post',
+          filter: { title: 'Alice Post' },
+          joins: [
+            { schema: 'User', alias: 'author', type: 'INNER', on: { localColumn: 'authorId', foreignColumn: 'id' } },
+          ],
+        },
+      ],
+      databaseName,
+      PostSchema as any,
+    );
+
+    assert.equal(postsWithAlias.length, 1);
+    assert.equal(postsWithAlias[0].author.name, 'Alice');
+    assert.equal(postsWithAlias[0].User, undefined, 'schema-name key should not appear when alias is set');
+
+    // 7. Same table joined twice with different aliases
+    // Fetch Bob's comment with both the commenter name and the post-author name,
+    // which requires joining User twice: once as 'commenter', once as 'postAuthor'.
+    const commentsWithBothAuthors = await driver.read(
+      [
+        {
+          schema: 'Comment',
+          filter: { content: 'Nice post!' },
+          joins: [
+            { schema: 'User', alias: 'commenter',  type: 'INNER', on: { localColumn: 'authorId', foreignColumn: 'id' } },
+            { schema: 'Post',                       type: 'INNER', on: { localColumn: 'postId',   foreignColumn: 'id' } },
+            // postAuthor joins User a second time using the already-joined "post" table via raw SQL
+            { schema: 'User', alias: 'postAuthor', type: 'INNER', on: `"post"."authorId" = "postAuthor"."id"` },
+          ],
+        },
+      ],
+      databaseName,
+      CommentSchema as any,
+    );
+
+    assert.equal(commentsWithBothAuthors.length, 1);
+    assert.equal(commentsWithBothAuthors[0].content, 'Nice post!');
+    assert.equal(commentsWithBothAuthors[0].commenter.name, 'Bob');
+    assert.equal(commentsWithBothAuthors[0].postAuthor.name, 'Alice');
   } finally {
     const adminClient = new Client(adminConfig);
     await adminClient.connect();
