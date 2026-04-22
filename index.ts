@@ -81,3 +81,4 @@ type DeleteSpec = {
 };
 
 export { Driver, CreateSpec, ReadSpec, UpdateSpec, DeleteSpec, Schema, PropertyDefinition, CascadeAction, JoinType, JoinColumnMapping, JoinSpec };
+export { createHandler, readHandler, updateHandler, deleteHandler } from './handlers';
