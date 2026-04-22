@@ -176,6 +176,47 @@ test('Postgres driver setup/create/read/update/delete', async () => {
     );
 
     assert.equal(deletedRead.length, 0);
+
+    // FK CASCADE: deleting the user should have cascade-deleted their posts and comments
+    const cascadedPosts = await driver.read(
+      [{ schema: 'Post', filter: { authorId: createdUsers[0] } }],
+      databaseName,
+      PostSchema as any,
+    );
+    assert.equal(cascadedPosts.length, 0, 'posts should be cascade-deleted when author is deleted');
+
+    const cascadedComments = await driver.read(
+      [{ schema: 'Comment', filter: { authorId: createdUsers[0] } }],
+      databaseName,
+      CommentSchema as any,
+    );
+    assert.equal(cascadedComments.length, 0, 'comments should be cascade-deleted when author is deleted');
+
+    // FK enforcement: inserting a post with a non-existent authorId must fail
+    await assert.rejects(
+      () =>
+        driver.create(
+          [
+            {
+              schema: 'Post',
+              data: {
+                id: `post-${randomUUID()}`,
+                title: 'Orphan Post',
+                content: 'Should fail',
+                authorId: 99999999,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              },
+            },
+          ],
+          databaseName,
+          PostSchema as any,
+        ),
+      (err: any) => {
+        assert.ok(err.code === '23503', `expected FK violation error code 23503, got ${err.code}`);
+        return true;
+      },
+    );
   } finally {
     const adminClient = new Client(adminConfig);
     await adminClient.connect();

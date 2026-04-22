@@ -1,5 +1,5 @@
 import { Pool, PoolConfig } from 'pg';
-import { CreateSpec, DeleteSpec, Driver, ReadSpec, Schema, UpdateSpec } from '../index';
+import { CascadeAction, CreateSpec, DeleteSpec, Driver, ReadSpec, Schema, UpdateSpec } from '../index';
 
 type SqlFragment = {
 	sql: string;
@@ -12,7 +12,17 @@ const quoteIdent = (value: string): string => `"${value.replace(/"/g, '""')}"`;
 
 const tableNameFor = (schema: Schema): string => schema.name.toLowerCase();
 
-const normalizeProperty = (property: any): { type: string; indexed?: boolean; unique?: boolean; required?: boolean; autoIncrement?: boolean } => {
+type NormalizedProperty = {
+	type: string;
+	indexed?: boolean;
+	unique?: boolean;
+	required?: boolean;
+	autoIncrement?: boolean;
+	onDelete?: CascadeAction;
+	onUpdate?: CascadeAction;
+};
+
+const normalizeProperty = (property: any): NormalizedProperty => {
 	if (typeof property === 'string') {
 		return { type: property };
 	}
@@ -23,6 +33,8 @@ const normalizeProperty = (property: any): { type: string; indexed?: boolean; un
 		unique: property?.unique,
 		required: property?.required,
 		autoIncrement: property?.autoIncrement,
+		onDelete: property?.onDelete,
+		onUpdate: property?.onUpdate,
 	};
 };
 
@@ -221,6 +233,47 @@ class PostgresDriver implements Driver {
 					const indexName = `${tableNameFor(schema)}_${columnName.toLowerCase()}_idx`;
 					await dbPool.query(
 						`CREATE INDEX IF NOT EXISTS ${quoteIdent(indexName)} ON ${tableName} (${quoteIdent(columnName)})`,
+					);
+				}
+			}
+
+			// Add foreign key constraints after all tables exist to avoid ordering issues
+			for (const schema of schemas) {
+				const tableName = quoteIdent(tableNameFor(schema));
+
+				for (const [columnName, property] of Object.entries(schema.properties)) {
+					const info = normalizeProperty(property);
+					if (!schemasByName.has(info.type)) {
+						continue;
+					}
+
+					const referenced = schemasByName.get(info.type)!;
+					const refTable = quoteIdent(tableNameFor(referenced));
+					const refColumn = quoteIdent(referenced.primaryKey);
+					const constraintName = quoteIdent(`fk_${tableNameFor(schema)}_${columnName.toLowerCase()}`);
+
+					const onDelete = info.onDelete ?? 'NO ACTION';
+					const onUpdate = info.onUpdate ?? 'NO ACTION';
+
+					const constraintExists = await dbPool.query(
+						`SELECT 1 FROM information_schema.table_constraints
+						 WHERE constraint_type = 'FOREIGN KEY'
+						   AND table_name = $1
+						   AND constraint_name = $2`,
+						[tableNameFor(schema), `fk_${tableNameFor(schema)}_${columnName.toLowerCase()}`],
+					);
+
+					if ((constraintExists.rowCount ?? 0) > 0) {
+						continue;
+					}
+
+					await dbPool.query(
+						`ALTER TABLE ${tableName}
+						 ADD CONSTRAINT ${constraintName}
+						 FOREIGN KEY (${quoteIdent(columnName)})
+						 REFERENCES ${refTable} (${refColumn})
+						 ON DELETE ${onDelete}
+						 ON UPDATE ${onUpdate}`,
 					);
 				}
 			}

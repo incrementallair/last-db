@@ -1,4 +1,5 @@
 
+import type { Schema } from '../../index';
 
 export const UserSchema = {
   name: 'User',
@@ -15,7 +16,7 @@ export const UserSchema = {
     updatedAt: 'date',
   },
   primaryKey: 'id',
-};
+} satisfies Schema;
 
 export const PostSchema = {
   name: 'Post',
@@ -23,24 +24,24 @@ export const PostSchema = {
     id: 'string',
     title: 'string',
     content: 'string',
-    authorId: 'User',
+    authorId: { type: 'User', onDelete: 'CASCADE', onUpdate: 'CASCADE' },
     createdAt: 'date',
     updatedAt: 'date',
   },
   primaryKey: 'id',
-};
+} satisfies Schema;
 
 export const CommentSchema = {
   name: 'Comment',
   properties: {
     id: 'string',
-    postId: 'Post',
-    authorId: 'User',
+    postId: { type: 'Post', onDelete: 'CASCADE', onUpdate: 'CASCADE' },
+    authorId: { type: 'User', onDelete: 'CASCADE', onUpdate: 'CASCADE' },
     content: 'string',
     createdAt: 'date',
     updatedAt: 'date',
   },
   primaryKey: 'id',
-};
+} satisfies Schema;
 
 export const schemas = [UserSchema, PostSchema, CommentSchema];

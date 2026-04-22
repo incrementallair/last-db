@@ -1,7 +1,19 @@
+type CascadeAction = 'CASCADE' | 'SET NULL' | 'SET DEFAULT' | 'RESTRICT' | 'NO ACTION';
+
+type PropertyDefinition = {
+    type: string;
+    indexed?: boolean;
+    unique?: boolean;
+    required?: boolean;
+    autoIncrement?: boolean;
+    onDelete?: CascadeAction;
+    onUpdate?: CascadeAction;
+};
+
 type Schema = {
     name: string;
     properties: {
-        [key: string]: any;
+        [key: string]: string | PropertyDefinition;
     };
     primaryKey: string;
 };
@@ -40,4 +52,4 @@ type DeleteSpec = {
     filter: any;
 };
 
-export { Driver, CreateSpec, ReadSpec, UpdateSpec, DeleteSpec, Schema };
+export { Driver, CreateSpec, ReadSpec, UpdateSpec, DeleteSpec, Schema, PropertyDefinition, CascadeAction };
