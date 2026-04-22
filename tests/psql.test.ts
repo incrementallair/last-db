@@ -225,3 +225,170 @@ test('Postgres driver setup/create/read/update/delete', async () => {
     await adminClient.end();
   }
 });
+
+test('Postgres driver read with joins', async () => {
+  const databaseName = `last_db_join_test_${Date.now()}`;
+  const driver = new PostgresDriver();
+
+  try {
+    await driver.setup(databaseName, schemas as any);
+
+    // Seed: two users
+    const [aliceId, bobId] = await driver.create(
+      [
+        {
+          schema: 'User',
+          data: { name: 'Alice', email: `alice-${randomUUID()}@example.com`, createdAt: new Date(), updatedAt: new Date() },
+        },
+        {
+          schema: 'User',
+          data: { name: 'Bob', email: `bob-${randomUUID()}@example.com`, createdAt: new Date(), updatedAt: new Date() },
+        },
+      ],
+      databaseName,
+      UserSchema as any,
+    );
+
+    // Seed: two posts (only Alice has a post)
+    const postId = `post-${randomUUID()}`;
+    await driver.create(
+      [
+        {
+          schema: 'Post',
+          data: { id: postId, title: 'Alice Post', content: 'content', authorId: aliceId, createdAt: new Date(), updatedAt: new Date() },
+        },
+      ],
+      databaseName,
+      PostSchema as any,
+    );
+
+    // Seed: a comment on that post by Bob, and one by Alice (the post author)
+    await driver.create(
+      [
+        {
+          schema: 'Comment',
+          data: { id: `comment-${randomUUID()}`, postId, authorId: bobId, content: 'Nice post!', createdAt: new Date(), updatedAt: new Date() },
+        },
+        {
+          schema: 'Comment',
+          data: { id: `comment-${randomUUID()}`, postId, authorId: aliceId, content: 'Thanks!', createdAt: new Date(), updatedAt: new Date() },
+        },
+      ],
+      databaseName,
+      CommentSchema as any,
+    );
+
+    // 1. INNER JOIN – posts with their author's name (column:column mapping)
+    const postsWithAuthor = await driver.read(
+      [
+        {
+          schema: 'Post',
+          joins: [
+            { schema: 'User', type: 'INNER', on: { localColumn: 'authorId', foreignColumn: 'id' } },
+          ],
+        },
+      ],
+      databaseName,
+      PostSchema as any,
+    );
+
+    assert.equal(postsWithAuthor.length, 1);
+    assert.equal(postsWithAuthor[0].title, 'Alice Post');
+    // joined User columns nested under schema name
+    assert.equal(postsWithAuthor[0].User.name, 'Alice');
+
+    // 2. LEFT JOIN – all users, with their posts (Bob has no post, should still appear)
+    const usersWithPosts = await driver.read(
+      [
+        {
+          schema: 'User',
+          joins: [
+            { schema: 'Post', type: 'LEFT', on: { localColumn: 'id', foreignColumn: 'authorId' } },
+          ],
+        },
+      ],
+      databaseName,
+      UserSchema as any,
+    );
+
+    assert.equal(usersWithPosts.length, 2);
+    const bobRow = usersWithPosts.find((r: any) => r.name === 'Bob');
+    assert.ok(bobRow, 'Bob should appear in LEFT JOIN result');
+    assert.equal(bobRow.Post.title, null, 'Bob has no post so title should be null');
+
+    // 3. Multiple joins – comments with their post title and the commenter's name
+    const commentsWithDetails = await driver.read(
+      [
+        {
+          schema: 'Comment',
+          filter: { content: 'Nice post!' },
+          joins: [
+            { schema: 'Post',    type: 'INNER', on: { localColumn: 'postId',   foreignColumn: 'id' } },
+            { schema: 'User',    type: 'INNER', on: { localColumn: 'authorId', foreignColumn: 'id' } },
+          ],
+        },
+      ],
+      databaseName,
+      CommentSchema as any,
+    );
+
+    assert.equal(commentsWithDetails.length, 1);
+    assert.equal(commentsWithDetails[0].content, 'Nice post!');
+    assert.equal(commentsWithDetails[0].Post.title, 'Alice Post');
+    assert.equal(commentsWithDetails[0].User.name, 'Bob');
+
+    // 4. Raw SQL expression for the ON clause
+    const rawJoin = await driver.read(
+      [
+        {
+          schema: 'Post',
+          joins: [
+            {
+              schema: 'User',
+              type: 'INNER',
+              on: `"post"."authorId" = "user"."id"`,
+            },
+          ],
+          filter: { title: 'Alice Post' },
+        },
+      ],
+      databaseName,
+      PostSchema as any,
+    );
+
+    assert.equal(rawJoin.length, 1);
+    assert.equal(rawJoin[0].User.name, 'Alice');
+
+    // 5. Array of column mappings — two conditions ANDed together
+    const multiConditionJoin = await driver.read(
+      [
+        {
+          schema: 'Comment',
+          joins: [
+            {
+              schema: 'Post',
+              type: 'INNER',
+              on: [
+                { localColumn: 'postId',   foreignColumn: 'id' },
+                { localColumn: 'authorId', foreignColumn: 'authorId' },
+              ],
+            },
+          ],
+        },
+      ],
+      databaseName,
+      CommentSchema as any,
+    );
+
+    // The second condition (comment.authorId = post.authorId) filters to only
+    // Alice's comment since she is the post author — Bob's comment is excluded.
+    assert.equal(multiConditionJoin.length, 1);
+    assert.equal(multiConditionJoin[0].content, 'Thanks!');
+  } finally {
+    const adminClient = new Client(adminConfig);
+    await adminClient.connect();
+    await adminClient.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1`, [databaseName]);
+    await adminClient.query(`DROP DATABASE IF EXISTS ${quoteIdent(databaseName)}`);
+    await adminClient.end();
+  }
+});

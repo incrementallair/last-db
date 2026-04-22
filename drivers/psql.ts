@@ -1,5 +1,5 @@
 import { Pool, PoolConfig } from 'pg';
-import { CascadeAction, CreateSpec, DeleteSpec, Driver, ReadSpec, Schema, UpdateSpec } from '../index';
+import { CascadeAction, CreateSpec, DeleteSpec, Driver, JoinSpec, ReadSpec, Schema, UpdateSpec } from '../index';
 
 type SqlFragment = {
 	sql: string;
@@ -80,7 +80,7 @@ const resolveType = (typeName: string, schemasByName: Map<string, Schema>): stri
 	}
 };
 
-const buildCondition = (filter: any, parameterOffset = 1): SqlFragment => {
+const buildCondition = (filter: any, parameterOffset = 1, tableQualifier?: string): SqlFragment => {
 	if (!filter || Object.keys(filter).length === 0) {
 		return { sql: 'TRUE', params: [] };
 	}
@@ -110,7 +110,9 @@ const buildCondition = (filter: any, parameterOffset = 1): SqlFragment => {
 				continue;
 			}
 
-			const quotedField = quoteIdent(field);
+			const quotedField = tableQualifier
+				? `${quoteIdent(tableQualifier)}.${quoteIdent(field)}`
+				: quoteIdent(field);
 			if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
 				for (const [operator, operand] of Object.entries(value)) {
 					switch (operator) {
@@ -168,8 +170,117 @@ const buildCondition = (filter: any, parameterOffset = 1): SqlFragment => {
 	return { sql: visit(filter), params };
 };
 
+type JoinBuildResult = {
+	columns: string;
+	clauses: string;
+};
+
+/**
+ * Builds the JOIN clauses and their column-selection fragment.
+ *
+ * Main table columns are qualified as `"maintable"."col" AS "col"` to prevent
+ * shadowing. Each joined table's columns are aliased as `"__SchemaName__col"`
+ * so they survive the flat pg result and can be reconstructed into nested objects.
+ * Falls back to `SELECT *` (joinSchemas = undefined) when schema info is unavailable.
+ */
+const buildJoins = (
+	joins: JoinSpec[],
+	mainSchema: Schema,
+	joinSchemas: Map<string, Schema> | undefined,
+): JoinBuildResult => {
+	if (joins.length === 0) {
+		return { columns: '*', clauses: '' };
+	}
+
+	const mainTable = tableNameFor(mainSchema);
+	const columnParts: string[] = [];
+
+	if (joinSchemas) {
+		// Explicit main-table columns so they are never shadowed by join columns.
+		for (const col of Object.keys(mainSchema.properties)) {
+			columnParts.push(`${quoteIdent(mainTable)}.${quoteIdent(col)} AS ${quoteIdent(col)}`);
+		}
+	} else {
+		columnParts.push('*');
+	}
+
+	const clauseParts: string[] = [];
+
+	for (const join of joins) {
+		const joinType = join.type ?? 'INNER';
+		const joinTableName = join.schema.toLowerCase();
+		const joinTable = quoteIdent(joinTableName);
+
+		let onClause: string;
+		if (typeof join.on === 'string') {
+			// Raw SQL expression — caller is responsible for any escaping.
+			onClause = join.on;
+		} else {
+			const mappings = Array.isArray(join.on) ? join.on : [join.on];
+			onClause = mappings
+				.map(
+					(m) =>
+						`${quoteIdent(mainTable)}.${quoteIdent(m.localColumn)}` +
+						` = ${joinTable}.${quoteIdent(m.foreignColumn)}`,
+				)
+				.join(' AND ');
+		}
+
+		clauseParts.push(`${joinType} JOIN ${joinTable} ON ${onClause}`);
+
+		// Add per-column aliases for this join when schema info is available.
+		if (joinSchemas) {
+			const joinSchema = joinSchemas.get(join.schema);
+			if (joinSchema) {
+				for (const col of Object.keys(joinSchema.properties)) {
+					const alias = `__${join.schema}__${col}`;
+					columnParts.push(`${joinTable}.${quoteIdent(col)} AS ${quoteIdent(alias)}`);
+				}
+			} else {
+				// Schema not registered — fall back to wildcard for this join.
+				columnParts.push(`${joinTable}.*`);
+			}
+		}
+	}
+
+	return {
+		columns: columnParts.join(', '),
+		clauses: clauseParts.join(' '),
+	};
+};
+
+/** Lifts `__SchemaName__col` aliases from a flat pg row into nested objects. */
+const reconstructJoinedRow = (row: Record<string, unknown>, joinSchemaNames: string[]): Record<string, unknown> => {
+	if (joinSchemaNames.length === 0) {
+		return row;
+	}
+
+	const result: Record<string, unknown> = {};
+
+	for (const [key, value] of Object.entries(row)) {
+		if (key.startsWith('__')) {
+			const rest = key.slice(2);
+			const sep = rest.indexOf('__');
+			if (sep !== -1) {
+				const schemaName = rest.slice(0, sep);
+				const colName = rest.slice(sep + 2);
+				if (!result[schemaName]) {
+					result[schemaName] = {};
+				}
+				(result[schemaName] as Record<string, unknown>)[colName] = value;
+				continue;
+			}
+		}
+		result[key] = value;
+	}
+
+	return result;
+};
+
 class PostgresDriver implements Driver {
 	private readonly poolConfig: PoolConfig;
+	/** Schemas registered per database via setup(). Used for join column qualification. */
+	private readonly dbSchemas = new Map<string, Map<string, Schema>>();
 
 	constructor(poolConfig: PoolConfig = {}) {
 		this.poolConfig = poolConfig;
@@ -280,6 +391,8 @@ class PostgresDriver implements Driver {
 		} finally {
 			await dbPool.end();
 		}
+
+		this.dbSchemas.set(database, schemaMap(schemas));
 	}
 
 	async create(createSpec: CreateSpec[], database: string, schema: Schema): Promise<number[]> {
@@ -324,7 +437,8 @@ class PostgresDriver implements Driver {
 
 	async read(readSpec: ReadSpec[], database: string, schema: Schema): Promise<any[]> {
 		const pool = new Pool({ ...this.poolConfig, database });
-		const tableName = quoteIdent(tableNameFor(schema));
+		const mainTable = tableNameFor(schema);
+		const tableName = quoteIdent(mainTable);
 		const records: any[] = [];
 
 		try {
@@ -333,8 +447,17 @@ class PostgresDriver implements Driver {
 					continue;
 				}
 
-				const where = buildCondition(spec.filter, 1);
-				let query = `SELECT * FROM ${tableName} WHERE ${where.sql}`;
+				const joins = spec.joins ?? [];
+				const joinSchemaNames = joins.map((j) => j.schema);
+				const { columns, clauses } = buildJoins(joins, schema, this.dbSchemas.get(database));
+				const qualifier = joins.length > 0 ? mainTable : undefined;
+				const where = buildCondition(spec.filter, 1, qualifier);
+
+				let query = `SELECT ${columns} FROM ${tableName}`;
+				if (clauses) {
+					query += ` ${clauses}`;
+				}
+				query += ` WHERE ${where.sql}`;
 
 				if (spec.sort && typeof spec.sort === 'object') {
 					const orderBy = Object.entries(spec.sort as Record<string, unknown>)
@@ -358,7 +481,7 @@ class PostgresDriver implements Driver {
 				}
 
 				const result = await pool.query(query, where.params);
-				records.push(...result.rows);
+				records.push(...result.rows.map((row) => reconstructJoinedRow(row, joinSchemaNames)));
 			}
 		} finally {
 			await pool.end();

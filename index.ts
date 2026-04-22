@@ -33,12 +33,34 @@ type CreateSpec = {
     data: any;
 };
 
+type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL';
+
+type JoinColumnMapping = {
+    /** Column on the driving (FROM) table. */
+    localColumn: string;
+    /** Column on the joined table. */
+    foreignColumn: string;
+};
+
+type JoinSpec = {
+    /** Schema name (matches Schema.name) of the table to join. */
+    schema: string;
+    /** Defaults to 'INNER'. */
+    type?: JoinType;
+    /**
+     * One or more column-to-column mappings (get safely quoted, combined with AND),
+     * or a raw SQL expression (caller is responsible for escaping any dynamic values).
+     */
+    on: JoinColumnMapping | JoinColumnMapping[] | string;
+};
+
 type ReadSpec = {
     schema: string;
     filter?: any;
     sort?: any;
     limit?: number;
     offset?: number;
+    joins?: JoinSpec[];
 };
 
 type UpdateSpec = {
@@ -52,4 +74,4 @@ type DeleteSpec = {
     filter: any;
 };
 
-export { Driver, CreateSpec, ReadSpec, UpdateSpec, DeleteSpec, Schema, PropertyDefinition, CascadeAction };
+export { Driver, CreateSpec, ReadSpec, UpdateSpec, DeleteSpec, Schema, PropertyDefinition, CascadeAction, JoinType, JoinColumnMapping, JoinSpec };
