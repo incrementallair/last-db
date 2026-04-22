@@ -15,7 +15,8 @@ type PropertyDefinition = {
  * Supplied by the caller at query time (e.g. from a verified session token).
  */
 type PermissionContext = {
-    userId: string | number;
+    /** null represents an unauthenticated request. Filters still run — they just receive null. */
+    userId: string | number | null;
 };
 
 /**
@@ -157,3 +158,4 @@ type DeleteSpec = {
 
 export { Driver, CreateSpec, ReadSpec, UpdateSpec, DeleteSpec, Schema, PropertyDefinition, CascadeAction, JoinType, JoinColumnMapping, JoinSpec, PermissionContext, RowFilter, ColumnPermissions, Permissions, ViewDefinition };
 export { createHandler, readHandler, updateHandler, deleteHandler } from './handlers';
+export { ProtectedDriver } from './drivers';
