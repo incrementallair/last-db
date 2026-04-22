@@ -10,12 +10,87 @@ type PropertyDefinition = {
     onUpdate?: CascadeAction;
 };
 
+/**
+ * The authenticated user context passed to all permission filter functions.
+ * Supplied by the caller at query time (e.g. from a verified session token).
+ */
+type PermissionContext = {
+    userId: string | number;
+};
+
+/**
+ * A function that returns a filter object merged into every query of that
+ * operation type.  Returning an empty object ( {} ) means "no restriction".
+ */
+type RowFilter = (ctx: PermissionContext) => Record<string, any>;
+
+/**
+ * Visibility and mutability rules for a single column.
+ */
+type ColumnPermissions = {
+    /**
+     * When false the column is stripped from all read results.
+     * Defaults to true.
+     */
+    readable?: boolean;
+    /**
+     * When false the column is stripped from create / update payloads
+     * before they reach the driver, making it effectively immutable by callers.
+     * Defaults to true.
+     */
+    writable?: boolean;
+};
+
+/**
+ * All permission rules for a schema, covering row-level and column-level security.
+ */
+type Permissions = {
+    /**
+     * Row-level filter automatically AND-ed into every read query.
+     * Use this to restrict which rows a user can see.
+     */
+    read?: RowFilter;
+    /**
+     * Row-level filter applied to create, update, and delete operations.
+     * On creates, matching fields are stamped onto the payload (enforcing ownership).
+     * On updates/deletes, the filter is AND-ed into the WHERE clause.
+     */
+    write?: RowFilter;
+    /** Per-column visibility / mutability overrides. */
+    columns?: {
+        [column: string]: ColumnPermissions;
+    };
+};
+
+/**
+ * A named, pre-defined projection of a schema — analogous to a SQL VIEW.
+ * Views inherit the schema's base permissions and add further restrictions.
+ */
+type ViewDefinition = {
+    /**
+     * Explicit allowlist of columns to include.
+     * Omit to inherit all readable columns from the schema's permissions.
+     */
+    columns?: string[];
+    /**
+     * Additional row-level filter applied on top of the schema's `read` filter.
+     * Both filters are AND-ed together.
+     */
+    filter?: RowFilter;
+};
+
 type Schema = {
     name: string;
     properties: {
         [key: string]: string | PropertyDefinition;
     };
     primaryKey: string;
+    /** Row-level and column-level security rules. */
+    permissions?: Permissions;
+    /** Named projections (views) that expose a restricted shape of this schema. */
+    views?: {
+        [viewName: string]: ViewDefinition;
+    };
 };
 
 interface Driver {
@@ -80,5 +155,5 @@ type DeleteSpec = {
     filter: any;
 };
 
-export { Driver, CreateSpec, ReadSpec, UpdateSpec, DeleteSpec, Schema, PropertyDefinition, CascadeAction, JoinType, JoinColumnMapping, JoinSpec };
+export { Driver, CreateSpec, ReadSpec, UpdateSpec, DeleteSpec, Schema, PropertyDefinition, CascadeAction, JoinType, JoinColumnMapping, JoinSpec, PermissionContext, RowFilter, ColumnPermissions, Permissions, ViewDefinition };
 export { createHandler, readHandler, updateHandler, deleteHandler } from './handlers';
